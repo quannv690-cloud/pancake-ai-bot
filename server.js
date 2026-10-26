@@ -51,7 +51,7 @@ app.post('/webhook/pancake', async (req, res) => {
     console.log('[Ca Đêm] Đã tạo đơn nháp thành công trên Pancake:', draftOrderResult);
     return res.status(200).send({ status: 'Success Night Shift', order_id: draftOrderResult.id });
 
--  } catch (error) {
+  } catch (error) {
     console.error('Lỗi xử lý webhook ca đêm:', error.message);
     return res.status(500).send({ error: error.message });
   }
@@ -105,7 +105,6 @@ async function createPancakeDraftOrder(orderData) {
 }
 
 function extractRecentConversation(payload) {
-  // Hỗ trợ quét linh hoạt các dạng payload khác nhau từ Pancake
   if (payload.messages && Array.isArray(payload.messages)) return payload.messages;
   if (payload.message && payload.message.text) return [payload.message.text];
   if (payload.event_name === 'new_message' && payload.data) return [payload.data.message || payload.data.text];
