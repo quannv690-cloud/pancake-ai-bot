@@ -28,7 +28,6 @@ app.post('/webhook/pancake', async (req, res) => {
   try {
     console.log('[DEBUG WEBHOOK RAW]:', JSON.stringify(req.body, null, 2));
 
-    // Phản hồi nhanh để xác thực với Pancake
     res.status(200).json({ success: true, message: "Webhook received" });
 
     if (!isAITimeShift()) {
@@ -45,20 +44,15 @@ app.post('/webhook/pancake', async (req, res) => {
       return;
     }
 
-    // 1. Gọi OpenAI để vừa tư vấn/trả lời khách, vừa bóc tách đơn hàng
     const aiResponse = await chatAndParseWithOpenAI(customerMessage);
     
-    // 2. Gửi tin nhắn phản hồi tự động lại cho khách qua Pancake
     if (aiResponse.reply_message) {
       await sendPancakeMessage(customerId, aiResponse.reply_message);
     }
 
-    // 3. Nếu khách đã chốt đơn đủ thông tin, tự động tạo đơn nháp
     if (aiResponse.is_order_confirmed && aiResponse.confidence_score >= 0.85) {
       const draftOrderResult = await createPancakeDraftOrder(aiResponse);
       console.log('[Ca Đêm] Đã tạo đơn nháp thành công trên Pancake:', draftOrderResult);
-      
-      // Gửi thêm tin nhắn xác nhận đã tạo đơn cho khách yên tâm
       await sendPancakeMessage(customerId, "Dạ em đã lên đơn nháp cho mình rồi nhé ạ. Sáng ra shop sẽ liên hệ xác nhận và gửi hàng sớm cho anh chị ạ!");
     }
 
@@ -103,7 +97,6 @@ Không kèm text ngoài JSON.`;
   return JSON.parse(response.data.choices[0].message.content);
 }
 
-// Hàm gửi tin nhắn phản hồi qua Pancake API
 async function sendPancakeMessage(customerId, messageText) {
   try {
     const endpoint = `https://pos.pancake.vn/api/v1/shops/${PANCAKE_SHOP_ID}/conversations/${customerId}/messages`;
@@ -143,18 +136,32 @@ async function createPancakeDraftOrder(orderData) {
   return response.data;
 }
 
+// Mở rộng quét linh hoạt toàn bộ cấu trúc payload từ Pancake
 function extractLatestCustomerMessage(payload) {
-  if (payload.message && payload.message.original_message) return payload.message.original_message;
-  if (payload.messages && payload.messages.length > 0) return payload.messages[payload.messages.length - 1];
-  if (payload.data && payload.data.message) return payload.data.message;
-  return payload.text || JSON.stringify(payload);
+  if (payload.original_message) return payload.original_message;
+  if (payload.message) {
+    if (typeof payload.message === 'string') return payload.message;
+    if (payload.message.original_message) return payload.message.original_message;
+    if (payload.message.text) return payload.message.text;
+  }
+  if (payload.data) {
+    if (payload.data.original_message) return payload.data.original_message;
+    if (payload.data.message) return payload.data.message;
+    if (payload.data.text) return payload.data.text;
+  }
+  if (payload.messages && Array.isArray(payload.messages) && payload.messages.length > 0) {
+    const last = payload.messages[payload.messages.length - 1];
+    return typeof last === 'string' ? last : (last.text || last.original_message || JSON.stringify(last));
+  }
+  return JSON.stringify(payload);
 }
 
 function extractCustomerId(payload) {
-  if (payload.message && payload.message.conversation_id) return payload.message.conversation_id;
   if (payload.conversation_id) return payload.conversation_id;
+  if (payload.message && payload.message.conversation_id) return payload.message.conversation_id;
   if (payload.data && payload.data.conversation_id) return payload.data.conversation_id;
-  return null;
+  if (payload.sender && payload.sender.id) return payload.sender.id;
+  return "default_conversation";
 }
 
 app.listen(PORT, () => {
