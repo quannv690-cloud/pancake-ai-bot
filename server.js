@@ -26,18 +26,24 @@ function isAITimeShift() {
 
 app.post('/webhook/pancake', async (req, res) => {
   try {
+    // In ra toàn bộ dữ liệu Pancake gửi sang để kiểm tra
+    console.log('[DEBUG WEBHOOK RAW]:', JSON.stringify(req.body, null, 2));
+
     if (!isAITimeShift()) {
+      console.log('[Ca Đêm] Đã nhận Webhook nhưng bỏ qua do đang là ban ngày.');
       return res.status(200).send({ status: 'Ignored: Outside AI shift hours (Daytime)' });
     }
 
     const webhookData = req.body;
     const customerMessages = extractRecentConversation(webhookData);
     if (!customerMessages || customerMessages.length === 0) {
+      console.log('[Ca Đêm] Webhook không có nội dung tin nhắn hợp lệ.');
       return res.status(200).send({ status: 'Ignored: No relevant message' });
     }
 
     const extractedData = await parseWithOpenAI(customerMessages);
     if (!extractedData.is_order_confirmed || extractedData.confidence_score < 0.85) {
+      console.log('[Ca Đêm] AI đánh giá khách chưa chốt đơn hoặc độ tin cậy thấp:', extractedData);
       return res.status(200).send({ status: 'Ignored: Order not confirmed yet' });
     }
 
@@ -45,7 +51,7 @@ app.post('/webhook/pancake', async (req, res) => {
     console.log('[Ca Đêm] Đã tạo đơn nháp thành công trên Pancake:', draftOrderResult);
     return res.status(200).send({ status: 'Success Night Shift', order_id: draftOrderResult.id });
 
-  } catch (error) {
+-  } catch (error) {
     console.error('Lỗi xử lý webhook ca đêm:', error.message);
     return res.status(500).send({ error: error.message });
   }
@@ -99,7 +105,11 @@ async function createPancakeDraftOrder(orderData) {
 }
 
 function extractRecentConversation(payload) {
-  return payload.messages || [];
+  // Hỗ trợ quét linh hoạt các dạng payload khác nhau từ Pancake
+  if (payload.messages && Array.isArray(payload.messages)) return payload.messages;
+  if (payload.message && payload.message.text) return [payload.message.text];
+  if (payload.event_name === 'new_message' && payload.data) return [payload.data.message || payload.data.text];
+  return [JSON.stringify(payload)];
 }
 
 app.listen(PORT, () => {
