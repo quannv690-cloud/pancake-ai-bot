@@ -26,34 +26,34 @@ function isAITimeShift() {
 
 app.post('/webhook/pancake', async (req, res) => {
   try {
-    // In ra toàn bộ dữ liệu Pancake gửi sang để kiểm tra
     console.log('[DEBUG WEBHOOK RAW]:', JSON.stringify(req.body, null, 2));
+
+    // Phản hồi ngay lập tức để xác thực kết nối với Pancake
+    res.status(200).json({ success: true, message: "Webhook received" });
 
     if (!isAITimeShift()) {
       console.log('[Ca Đêm] Đã nhận Webhook nhưng bỏ qua do đang là ban ngày.');
-      return res.status(200).send({ status: 'Ignored: Outside AI shift hours (Daytime)' });
+      return;
     }
 
     const webhookData = req.body;
     const customerMessages = extractRecentConversation(webhookData);
     if (!customerMessages || customerMessages.length === 0) {
       console.log('[Ca Đêm] Webhook không có nội dung tin nhắn hợp lệ.');
-      return res.status(200).send({ status: 'Ignored: No relevant message' });
+      return;
     }
 
     const extractedData = await parseWithOpenAI(customerMessages);
     if (!extractedData.is_order_confirmed || extractedData.confidence_score < 0.85) {
       console.log('[Ca Đêm] AI đánh giá khách chưa chốt đơn hoặc độ tin cậy thấp:', extractedData);
-      return res.status(200).send({ status: 'Ignored: Order not confirmed yet' });
+      return;
     }
 
     const draftOrderResult = await createPancakeDraftOrder(extractedData);
     console.log('[Ca Đêm] Đã tạo đơn nháp thành công trên Pancake:', draftOrderResult);
-    return res.status(200).send({ status: 'Success Night Shift', order_id: draftOrderResult.id });
 
   } catch (error) {
     console.error('Lỗi xử lý webhook ca đêm:', error.message);
-    return res.status(500).send({ error: error.message });
   }
 });
 
