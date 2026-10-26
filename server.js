@@ -28,7 +28,7 @@ app.post('/webhook/pancake', async (req, res) => {
   try {
     console.log('[DEBUG WEBHOOK RAW]:', JSON.stringify(req.body, null, 2));
 
-    // Phản hồi ngay lập tức để xác thực kết nối với Pancake
+    // Phản hồi nhanh để xác thực với Pancake
     res.status(200).json({ success: true, message: "Webhook received" });
 
     if (!isAITimeShift()) {
@@ -37,32 +37,56 @@ app.post('/webhook/pancake', async (req, res) => {
     }
 
     const webhookData = req.body;
-    const customerMessages = extractRecentConversation(webhookData);
-    if (!customerMessages || customerMessages.length === 0) {
-      console.log('[Ca Đêm] Webhook không có nội dung tin nhắn hợp lệ.');
+    const customerMessage = extractLatestCustomerMessage(webhookData);
+    const customerId = extractCustomerId(webhookData);
+
+    if (!customerMessage || !customerId) {
+      console.log('[Ca Đêm] Không tìm thấy nội dung tin nhắn hoặc ID khách hàng.');
       return;
     }
 
-    const extractedData = await parseWithOpenAI(customerMessages);
-    if (!extractedData.is_order_confirmed || extractedData.confidence_score < 0.85) {
-      console.log('[Ca Đêm] AI đánh giá khách chưa chốt đơn hoặc độ tin cậy thấp:', extractedData);
-      return;
+    // 1. Gọi OpenAI để vừa tư vấn/trả lời khách, vừa bóc tách đơn hàng
+    const aiResponse = await chatAndParseWithOpenAI(customerMessage);
+    
+    // 2. Gửi tin nhắn phản hồi tự động lại cho khách qua Pancake
+    if (aiResponse.reply_message) {
+      await sendPancakeMessage(customerId, aiResponse.reply_message);
     }
 
-    const draftOrderResult = await createPancakeDraftOrder(extractedData);
-    console.log('[Ca Đêm] Đã tạo đơn nháp thành công trên Pancake:', draftOrderResult);
+    // 3. Nếu khách đã chốt đơn đủ thông tin, tự động tạo đơn nháp
+    if (aiResponse.is_order_confirmed && aiResponse.confidence_score >= 0.85) {
+      const draftOrderResult = await createPancakeDraftOrder(aiResponse);
+      console.log('[Ca Đêm] Đã tạo đơn nháp thành công trên Pancake:', draftOrderResult);
+      
+      // Gửi thêm tin nhắn xác nhận đã tạo đơn cho khách yên tâm
+      await sendPancakeMessage(customerId, "Dạ em đã lên đơn nháp cho mình rồi nhé ạ. Sáng ra shop sẽ liên hệ xác nhận và gửi hàng sớm cho anh chị ạ!");
+    }
 
   } catch (error) {
     console.error('Lỗi xử lý webhook ca đêm:', error.message);
   }
 });
 
-async function parseWithOpenAI(conversationHistory) {
-  const systemPrompt = `Bạn là trợ lý AI chuyên bóc tách đơn hàng từ tin nhắn Facebook/Pancake. Trả về đúng định dạng JSON Schema: {"is_order_confirmed": boolean, "customer_name": string, "phone_number": string, "shipping_address": string, "items": [{"sku": string, "quantity": number, "unit_price": number}], "confidence_score": number}. Không kèm text ngoài.`;
+async function chatAndParseWithOpenAI(customerMessage) {
+  const systemPrompt = `Bạn là nhân viên tư vấn bán hàng ca đêm cho cửa hàng đặc sản ăn vặt (Đác Rim Chanh Dây 85k, Mít Thái Sấy Giòn 95k). 
+Nhiệm vụ của bạn:
+1. Trả lời/tư vấn lịch sự, thân thiện với khách. Nếu khách chưa chốt đơn, hãy tư vấn thêm.
+2. Bóc tách thông tin đơn hàng nếu khách muốn mua.
+Trả về đúng định dạng JSON Schema: 
+{
+  "reply_message": "string (nội dung tin nhắn tư vấn hoặc trả lời khách)",
+  "is_order_confirmed": boolean, 
+  "customer_name": "string", 
+  "phone_number": "string", 
+  "shipping_address": "string", 
+  "items": [{"sku": "string", "quantity": number, "unit_price": number}], 
+  "confidence_score": number
+}
+Không kèm text ngoài JSON.`;
 
   const userPayload = {
     danh_muc_san_pham: PRODUCT_CATALOG,
-    lich_su_hoi_thoai: conversationHistory
+    tin_nhan_cua_khach: customerMessage
   };
 
   const response = await axios.post('https://api.openai.com/v1/chat/completions', {
@@ -79,12 +103,27 @@ async function parseWithOpenAI(conversationHistory) {
   return JSON.parse(response.data.choices[0].message.content);
 }
 
+// Hàm gửi tin nhắn phản hồi qua Pancake API
+async function sendPancakeMessage(customerId, messageText) {
+  try {
+    const endpoint = `https://pos.pancake.vn/api/v1/shops/${PANCAKE_SHOP_ID}/conversations/${customerId}/messages`;
+    await axios.post(endpoint, {
+      message: messageText
+    }, {
+      headers: { 'Authorization': `Bearer ${PANCAKE_API_TOKEN}` }
+    });
+    console.log('[Ca Đêm] Đã gửi tin nhắn phản hồi cho khách thành công.');
+  } catch (err) {
+    console.error('Lỗi gửi tin nhắn qua Pancake:', err.response?.data || err.message);
+  }
+}
+
 async function createPancakeDraftOrder(orderData) {
   const pancakeEndpoint = `https://pos.pancake.vn/api/v1/shops/${PANCAKE_SHOP_ID}/orders`;
 
   const payload = {
     customer: {
-      name: orderData.customer_name,
+      name: orderData.customer_name || "Khách hàng Facebook",
       phone_number: orderData.phone_number,
       address: orderData.shipping_address
     },
@@ -104,11 +143,18 @@ async function createPancakeDraftOrder(orderData) {
   return response.data;
 }
 
-function extractRecentConversation(payload) {
-  if (payload.messages && Array.isArray(payload.messages)) return payload.messages;
-  if (payload.message && payload.message.text) return [payload.message.text];
-  if (payload.event_name === 'new_message' && payload.data) return [payload.data.message || payload.data.text];
-  return [JSON.stringify(payload)];
+function extractLatestCustomerMessage(payload) {
+  if (payload.message && payload.message.original_message) return payload.message.original_message;
+  if (payload.messages && payload.messages.length > 0) return payload.messages[payload.messages.length - 1];
+  if (payload.data && payload.data.message) return payload.data.message;
+  return payload.text || JSON.stringify(payload);
+}
+
+function extractCustomerId(payload) {
+  if (payload.message && payload.message.conversation_id) return payload.message.conversation_id;
+  if (payload.conversation_id) return payload.conversation_id;
+  if (payload.data && payload.data.conversation_id) return payload.data.conversation_id;
+  return null;
 }
 
 app.listen(PORT, () => {
